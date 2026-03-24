@@ -97,10 +97,12 @@ class FeatureFactory:
 # 3. Strategy Engine V20 (Fractal Flow)
 # ==========================================
 class StrategyEngine:
-    def __init__(self, df):
+    def __init__(self, df, fee=0.0006, stop_loss_pct=0.03):
         self.df = df
         self.test_df = df.copy()
         self.results = []
+        self.fee = fee
+        self.stop_loss_pct = stop_loss_pct
 
     def _backtest(self, name, signals):
         price = self.test_df['Close'].values
@@ -110,18 +112,19 @@ class StrategyEngine:
         in_pos = False
         entry_price = 0.0
         trades = []
-        fee = 0.0006
         
         for i in range(1, len(price)):
             if in_pos:
                 # Exit Signal
                 if sigs[i] == -1:
-                    pnl = (price[i] - entry_price) / entry_price - (fee * 2)
+                    # Using self.fee
+                    pnl = (price[i] - entry_price) / entry_price - (self.fee * 2)
                     trades.append(pnl)
                     in_pos = False
-                # Hard Stop (3% safety)
-                elif price[i] < entry_price * 0.97:
-                    pnl = -0.03 - (fee * 2)
+                # Hard Stop 
+                # Using self.stop_loss_pct dynamically
+                elif price[i] < entry_price * (1 - self.stop_loss_pct):
+                    pnl = -self.stop_loss_pct - (self.fee * 2)
                     trades.append(pnl)
                     in_pos = False
             
@@ -191,7 +194,12 @@ class StrategyEngine:
 def main():
     print("Initializing Framework V20 (The Fractal Flow)...")
     
-    loader = DataLoader('Data/btc_1m_orderflow.csv') 
+    # Extracted configuration variables to the top
+    data_filepath = 'Data/btc_1m_orderflow.csv'
+    exchange_fee = 0.0006
+    max_stop_loss = 0.03
+    
+    loader = DataLoader(data_filepath) 
     df = loader.load_data()
     
     if df.empty: return
@@ -199,7 +207,8 @@ def main():
     ff = FeatureFactory(df)
     processed_df = ff.engineer_features()
 
-    engine = StrategyEngine(processed_df)
+    # Pass the variables into the engine
+    engine = StrategyEngine(processed_df, fee=exchange_fee, stop_loss_pct=max_stop_loss)
     engine.run_hybrid_strategies()
 
     results_df = pd.DataFrame(engine.results)
