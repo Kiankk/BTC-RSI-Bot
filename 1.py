@@ -23,14 +23,14 @@ class DataLoader:
                 'Open time': 'Timestamp', 'open_time': 'Timestamp',
                 'Taker buy base asset volume': 'Taker_Buy_Vol'
             }
-            df.rename(columns=rename_map, inplace=True)
+            df = df.rename(columns=rename_map)
             
             # Date Parse
             try:
                 df['Timestamp'] = pd.to_datetime(df['Timestamp'])
             except:
                 df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='ms')
-            df.set_index('Timestamp', inplace=True)
+            df = df.set_index('Timestamp')
             
             # Numeric
             cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Taker_Buy_Vol']
@@ -38,7 +38,7 @@ class DataLoader:
                 if c in df.columns:
                     df[c] = pd.to_numeric(df[c], errors='coerce')
             
-            df.dropna(inplace=True)
+            df = df.dropna()
             print(f"Loaded {len(df)} rows.")
             return df
         except Exception as e:
@@ -88,7 +88,7 @@ class FeatureFactory:
         # Merge 1H Trend onto 5m Data
         # ffill() propagates the last known 1H trend to all 12 of the 5m candles in that hour
         merged_df = df_5m.join(df_1h_shifted[['EMA_50_1H', 'Flow_Bias_1H']], how='left')
-        merged_df.ffill(inplace=True)
+        merged_df = merged_df.ffill()
         merged_df.dropna(inplace=True)
         
         return merged_df
