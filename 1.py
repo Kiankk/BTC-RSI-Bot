@@ -104,10 +104,13 @@ class StrategyEngine:
         self.fee = fee
         self.stop_loss_pct = stop_loss_pct
 
-    def _backtest(self, name, signals):
+    # Changed 'signals' to 'entries' and 'exits'
+    def _backtest(self, name, entries, exits):
         price = self.test_df['Close'].values
-        timestamps = self.test_df.index
-        sigs = signals.values
+        
+        # Convert pandas boolean series to fast numpy arrays
+        entries_arr = entries.values
+        exits_arr = exits.values
         
         in_pos = False
         entry_price = 0.0
@@ -115,21 +118,20 @@ class StrategyEngine:
         
         for i in range(1, len(price)):
             if in_pos:
-                # Exit Signal
-                if sigs[i] == -1:
-                    # Using self.fee
+                # Exit Signal (Checking the boolean array directly)
+                if exits_arr[i]:
                     pnl = (price[i] - entry_price) / entry_price - (self.fee * 2)
                     trades.append(pnl)
                     in_pos = False
-                # Hard Stop 
-                # Using self.stop_loss_pct dynamically
+                # Hard Stop
                 elif price[i] < entry_price * (1 - self.stop_loss_pct):
                     pnl = -self.stop_loss_pct - (self.fee * 2)
                     trades.append(pnl)
                     in_pos = False
             
             elif not in_pos:
-                if sigs[i] == 1:
+                # Entry Signal (Checking the boolean array directly)
+                if entries_arr[i]:
                     entry_price = price[i]
                     in_pos = True
 
@@ -159,34 +161,24 @@ class StrategyEngine:
         df = self.test_df
         
         # --- STRAT 1: Trend Alignment + RSI Dip ---
-        # Logic: 
-        # 1. 1H Trend is UP (Price > EMA 50)
-        # 2. 1H Order Flow is Bullish
-        # 3. 5m RSI < 30 (Buying the dip in a verified uptrend)
-        
         trend_up = (df['Close'] > df['EMA_50_1H'])
         flow_bull = (df['Flow_Bias_1H'] == 1)
         dip_buy = (df['RSI_5m'] < 30)
         
         s1_entry = trend_up & flow_bull & dip_buy
-        
-        # Exit: 5m RSI becomes overbought (RSI > 70)
         s1_exit = (df['RSI_5m'] > 70)
         
         self._run_strat("Hybrid_Flow_Dip_RSI30", s1_entry, s1_exit)
         
         # --- STRAT 2: Aggressive Dip (RSI < 40) ---
-        # Same logic, but more aggressive entry
         dip_aggressive = (df['RSI_5m'] < 40)
         s2_entry = trend_up & flow_bull & dip_aggressive
         self._run_strat("Hybrid_Flow_Dip_RSI40", s2_entry, s1_exit)
 
     def _run_strat(self, name, entry_cond, exit_cond):
-        signals = pd.Series(0, index=self.test_df.index)
-        signals[entry_cond] = 1
-        signals[exit_cond] = -1
-        signals = signals.replace(0, np.nan).ffill().fillna(0)
-        self._backtest(name, signals)
+        # We no longer build a merged signal line. 
+        # We pass the boolean conditions straight to the backtester!
+        self._backtest(name, entry_cond, exit_cond)
 
 # ==========================================
 # 4. Main
