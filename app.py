@@ -2,7 +2,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
-from engine import DataLoader, FeatureFactory, StrategyEngine # Importing your backend
+from src.engine import DataLoader, FeatureFactory, StrategyEngine # Importing your backend
 
 # ==========================================
 # Streamlit Page Config
@@ -24,7 +24,7 @@ run_button = st.sidebar.button("Run Backtest 🚀")
 if run_button:
     with st.spinner("Fetching data and calculating indicators..."):
         # 1. Run the Backend Engine
-        loader = DataLoader('Data/btc_1m_orderflow.csv') # Ensure path is correct
+        loader = DataLoader('data/btc_1m_orderflow.csv') # Ensure path is correct
         df = loader.load_data()
         
         if not df.empty:
