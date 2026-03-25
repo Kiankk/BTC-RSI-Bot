@@ -1,0 +1,21 @@
+# ==========================================
+# V21 Quant Trading Engine Configuration
+# ==========================================
+
+data:
+  filepath: "data/btc_1m_orderflow.csv"
+  symbol: "BTCUSDT"
+  timeframe_micro: "5min"
+  timeframe_macro: "1D"
+
+strategy:
+  initial_capital: 500.0
+  position_size: 500.0
+  fee_rate: 0.0006
+  hard_stop_loss_pct: 0.015  # 1.5%
+
+indicators:
+  rsi_length: 14
+  rsi_oversold: 40
+  rsi_overbought: 70
+  ema_length: 50
