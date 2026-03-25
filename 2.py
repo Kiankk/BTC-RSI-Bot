@@ -3,6 +3,7 @@ import numpy as np
 import pandas_ta as ta
 import matplotlib.pyplot as plt
 import warnings
+import itertools
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -69,6 +70,16 @@ class FeatureFactory:
         
         df_1h_shifted = df_1h.shift(1)
         
+        # --- MACRO (1-Day) ---
+        df_1d = self.df.resample('1D').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last',
+            'Volume': 'sum', 'Taker_Buy_Vol': 'sum'
+        }).dropna()
+        
+        df_1d['EMA_50_1D'] = ta.ema(df_1d['Close'], length=50)
+        
+        df_1d_shifted = df_1d.shift(1)
+        
         # --- MICRO (5-Minute) ---
         df_5m = self.df.resample('5min').agg({
             'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last',
@@ -76,8 +87,10 @@ class FeatureFactory:
         }).dropna()
         
         df_5m['RSI_5m'] = ta.rsi(df_5m['Close'], length=14)
+        df_5m['ATR_5m'] = ta.atr(df_5m['High'], df_5m['Low'], df_5m['Close'], length=14)
         
         merged_df = df_5m.join(df_1h_shifted[['EMA_50_1H', 'Flow_Bias_1H']], how='left')
+        merged_df = merged_df.join(df_1d_shifted[['EMA_50_1D']], how='left')
         merged_df.ffill(inplace=True)
         merged_df.dropna(inplace=True)
         
@@ -96,115 +109,133 @@ class StrategyEngine:
 
     def _backtest(self, name, signals):
         price = self.test_df['Close'].values
+        atr = self.test_df['ATR_5m'].values
         timestamps = self.test_df.index
         sigs = signals.values
         
         in_pos = False
         entry_price = 0.0
-        trades = []     # Store PnL %
-        equity = [100]  # Start with 100% (Base 100)
+        current_atr = 0.0
+        entry_time = None
+        trades = []
+        
+        # FIXED CAPITAL
+        initial_capital = 500.0
+        position_size = 500.0
+        equity = [initial_capital]
         
         fee = 0.0006
-        
-        # Trade Log Data
         log_entries = []
         
         for i in range(1, len(price)):
             current_equity = equity[-1]
             
             if in_pos:
-                # Exit Logic
-                exit_code = 0 # 0=None, 1=Signal, 2=Stop
+                exit_code = 0
                 pnl = 0.0
                 
-                if sigs[i] == -1:
+                # Dynamic Stop Loss: 2x the 5-minute ATR
+                stop_price = entry_price - (current_atr * 2)
+                
+                if price[i] < stop_price:
+                    pnl = (stop_price - entry_price) / entry_price - (fee * 2)
+                    exit_code = 2
+                elif sigs[i] == -1:
                     pnl = (price[i] - entry_price) / entry_price - (fee * 2)
                     exit_code = 1
-                elif price[i] < entry_price * 0.97: # Hard Stop
-                    pnl = -0.03 - (fee * 2)
-                    exit_code = 2
                 
                 if exit_code > 0:
                     trades.append(pnl)
                     in_pos = False
                     
-                    # Update Equity
-                    new_equity = current_equity * (1 + pnl)
+                    # Apply fixed sizing math
+                    trade_profit_loss = position_size * pnl
+                    new_equity = current_equity + trade_profit_loss
                     equity.append(new_equity)
                     
-                    # Log Trade
                     log_entries.append({
-                        'Entry_Time': entry_time,
-                        'Exit_Time': timestamps[i],
-                        'Type': 'Long',
-                        'Entry_Price': entry_price,
-                        'Exit_Price': price[i],
-                        'PnL': pnl,
+                        'Entry_Time': entry_time, 'Exit_Time': timestamps[i],
+                        'Type': 'Long', 'Entry_Price': entry_price,
+                        'Exit_Price': price[i], 'PnL': pnl,
+                        'Realized_USD': trade_profit_loss,
                         'Reason': 'Signal' if exit_code==1 else 'StopLoss'
                     })
                 else:
-                    # Mark to Market (Unrealized PnL for the curve)
-                    # Optional: For simpler curves, just copy last equity until exit
                     equity.append(current_equity)
                     
             elif not in_pos:
                 if sigs[i] == 1:
                     entry_price = price[i]
+                    current_atr = atr[i]
                     entry_time = timestamps[i]
                     in_pos = True
-                    equity.append(current_equity) # No change on entry tick
+                    equity.append(current_equity)
                 else:
                     equity.append(current_equity)
 
-        # Pad equity to match dataframe length if needed (rare due to loop)
         if len(equity) < len(timestamps):
             equity.extend([equity[-1]] * (len(timestamps) - len(equity)))
         
-        # Save Data for Plotting
         self.equity_curves[name] = pd.Series(equity, index=timestamps[:len(equity)])
         self.trade_logs[name] = pd.DataFrame(log_entries)
 
-        if not trades: return
+        if not trades:
+            return
         
-        trades = np.array(trades)
-        wins = trades[trades > 0]
-        losses = trades[trades <= 0]
-        
-        net_profit = (equity[-1] - 100) # Since base was 100
-        pf = np.sum(wins) / np.abs(np.sum(losses)) if len(losses) > 0 else 0
-        win_rate = len(wins) / len(trades) * 100
-        
-        self.results.append({
-            'Strategy': name,
-            'Net Profit %': round(net_profit, 2),
-            'PF': round(pf, 2),
-            'Win Rate %': round(win_rate, 1),
-            'Trades': len(trades)
-        })
+        self._calculate_tear_sheet(name, self.equity_curves[name], self.trade_logs[name])
 
     def run_hybrid_strategies(self):
-        print("Running V20 Strategies...")
+        print("Running V21 Strategies (Macro Filter + Fixed Sizing)...")
         df = self.test_df
         
-        trend_up = (df['Close'] > df['EMA_50_1H'])
+        # New Definitions including the Daily Filter
+        trend_up_1h = (df['Close'] > df['EMA_50_1H'])
+        trend_up_1d = (df['Close'] > df['EMA_50_1D'])
         flow_bull = (df['Flow_Bias_1H'] == 1)
         
-        # Strat 1: RSI 30
-        dip_buy = (df['RSI_5m'] < 30)
-        s1_entry = trend_up & flow_bull & dip_buy
-        s1_exit = (df['RSI_5m'] > 70)
-        self._backtest("Hybrid_RSI30", self._latch(s1_entry, s1_exit))
+        # Base Entry vs Macro Entry
+        dip_40 = (df['RSI_5m'] < 40)
+        exit_70 = (df['RSI_5m'] > 70)
         
-        # Strat 2: RSI 40 (The Aggressive Winner)
-        dip_aggressive = (df['RSI_5m'] < 40)
-        s2_entry = trend_up & flow_bull & dip_aggressive
-        self._backtest("Hybrid_RSI40", self._latch(s2_entry, s1_exit))
+        # The ultimate macro logic
+        macro_entry = trend_up_1h & flow_bull & dip_40 & trend_up_1d
+        self._backtest("Hybrid_RSI40_Macro", self._latch(macro_entry, exit_70))
 
     def _latch(self, entry, exit):
         signals = pd.Series(0, index=self.test_df.index)
         signals[entry] = 1
         signals[exit] = -1
         return signals.replace(0, np.nan).ffill().fillna(0)
+
+    def _calculate_tear_sheet(self, name, equity_series, trades_df):
+        trades = trades_df['PnL'].values
+        wins = trades[trades > 0]
+        losses = trades[trades <= 0]
+        
+        initial_capital = 500.0
+        net_profit = equity_series.iloc[-1] - initial_capital
+        
+        rolling_max = equity_series.cummax()
+        drawdown_pct = (equity_series - rolling_max) / rolling_max * 100
+        max_dd_pct = drawdown_pct.min()
+        
+        timestamps = equity_series.index
+        days = (timestamps[-1] - timestamps[0]).days
+        cagr = ((equity_series.iloc[-1] / initial_capital) ** (365.25 / max(1, days)) - 1) * 100
+        
+        daily_equity = equity_series.resample('1D').last().ffill()
+        daily_pct = daily_equity.pct_change().dropna()
+        sharpe = (daily_pct.mean() / daily_pct.std()) * np.sqrt(365.25) if daily_pct.std() != 0 else 0
+        
+        self.results.append({
+            'Strategy': name,
+            'Net Profit ($)': round(net_profit, 2),
+            'CAGR %': round(cagr, 2),
+            'Max Drawdown %': round(max_dd_pct, 2),
+            'Sharpe': round(sharpe, 2),
+            'Win Rate %': round((len(wins)/max(1, len(trades))) * 100, 1),
+            'Trades': len(trades)
+        })
 
 # ==========================================
 # 4. The Visualizer (New Class)
@@ -215,8 +246,8 @@ class Visualizer:
         self.logs = trade_logs
 
     def plot_performance(self):
-        # We focus on the best performer (usually RSI40 based on your data)
-        best_strat = "Hybrid_RSI40"
+        # We focus on the best performer (usually RSI40_Macro based on V21)
+        best_strat = "Hybrid_RSI40_Macro"
         if best_strat not in self.curves:
             print("Strategy data not found.")
             return
@@ -230,8 +261,8 @@ class Visualizer:
         
         # 1. Equity Curve
         axes[0, 0].plot(equity.index, equity.values, label='Strategy Equity', color='blue')
-        axes[0, 0].set_title('Equity Curve (Growth)')
-        axes[0, 0].set_ylabel('Balance (Start=100)')
+        axes[0, 0].set_title('Cumulative Account Equity ($)')
+        axes[0, 0].set_ylabel('Balance ($)')
         axes[0, 0].legend()
         axes[0, 0].grid(True)
         
@@ -247,19 +278,19 @@ class Visualizer:
         
         # 3. Trade Distribution (Histogram)
         if not trades.empty:
-            pnl_pct = trades['PnL'] * 100
-            axes[1, 0].hist(pnl_pct, bins=50, color='purple', alpha=0.7)
-            axes[1, 0].set_title('Trade PnL Distribution')
-            axes[1, 0].set_xlabel('Profit/Loss %')
+            pnl_usd = trades['Realized_USD']
+            axes[1, 0].hist(pnl_usd, bins=50, color='purple', alpha=0.7)
+            axes[1, 0].set_title('Trade PnL Distribution ($)')
+            axes[1, 0].set_xlabel('Profit/Loss ($)')
             axes[1, 0].set_ylabel('Frequency')
             axes[1, 0].axvline(0, color='black', linestyle='--')
         
         # 4. Rolling Win Rate (Stability)
         if not trades.empty:
             # We need to map trades back to time for a rolling line
-            trades = trades.set_index('Exit_Time')
-            trades['Win'] = np.where(trades['PnL'] > 0, 1, 0)
-            rolling_wr = trades['Win'].rolling(window=50).mean() * 100
+            trades_with_exit = trades.set_index('Exit_Time')
+            trades_with_exit['Win'] = np.where(trades_with_exit['PnL'] > 0, 1, 0)
+            rolling_wr = trades_with_exit['Win'].rolling(window=50).mean() * 100
             
             axes[1, 1].plot(rolling_wr.index, rolling_wr.values, color='green')
             axes[1, 1].set_title('Rolling Win Rate (50-Trade Avg)')
@@ -273,7 +304,7 @@ class Visualizer:
 # 5. Main
 # ==========================================
 def main():
-    print("Initializing Framework V20.5 (The Visualizer)...")
+    print("Initializing Framework V21 (Fixed Sizing + Macro Filter)...")
     
     loader = DataLoader('Data/btc_1m_orderflow.csv') 
     df = loader.load_data()
@@ -289,10 +320,10 @@ def main():
     # Print Text Results
     results_df = pd.DataFrame(engine.results)
     if not results_df.empty:
-        results_df.sort_values(by=['Net Profit %'], ascending=False, inplace=True)
-        print("\n" + "="*50)
-        print("LEADERBOARD")
-        print("="*50)
+        results_df.sort_values(by=['Sharpe'], ascending=False, inplace=True)
+        print("\n" + "="*80)
+        print("INSTITUTIONAL TEAR SHEET")
+        print("="*80)
         print(results_df.to_string(index=False))
         
         # LAUNCH GRAPHS
