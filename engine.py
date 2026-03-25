@@ -1,14 +1,11 @@
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
-import matplotlib.pyplot as plt
 import warnings
 import itertools
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
-# Use a nice style for plots
-plt.style.use('bmh') 
 
 # ==========================================
 # 1. Data Loader (Same as V20)
@@ -236,102 +233,3 @@ class StrategyEngine:
             'Win Rate %': round((len(wins)/max(1, len(trades))) * 100, 1),
             'Trades': len(trades)
         })
-
-# ==========================================
-# 4. The Visualizer (New Class)
-# ==========================================
-class Visualizer:
-    def __init__(self, equity_curves, trade_logs):
-        self.curves = equity_curves
-        self.logs = trade_logs
-
-    def plot_performance(self):
-        # We focus on the best performer (usually RSI40_Macro based on V21)
-        best_strat = "Hybrid_RSI40_Macro"
-        if best_strat not in self.curves:
-            print("Strategy data not found.")
-            return
-
-        equity = self.curves[best_strat]
-        trades = self.logs[best_strat]
-        
-        # Create a 2x2 Grid of Charts
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f'Performance Analysis: {best_strat}', fontsize=16)
-        
-        # 1. Equity Curve
-        axes[0, 0].plot(equity.index, equity.values, label='Strategy Equity', color='blue')
-        axes[0, 0].set_title('Cumulative Account Equity ($)')
-        axes[0, 0].set_ylabel('Balance ($)')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True)
-        
-        # 2. Drawdown Plot
-        # Calculate Drawdown
-        rolling_max = equity.cummax()
-        drawdown = (equity - rolling_max) / rolling_max * 100
-        
-        axes[0, 1].fill_between(drawdown.index, drawdown.values, color='red', alpha=0.3)
-        axes[0, 1].set_title('Drawdown (%)')
-        axes[0, 1].set_ylabel('% from Peak')
-        axes[0, 1].grid(True)
-        
-        # 3. Trade Distribution (Histogram)
-        if not trades.empty:
-            pnl_usd = trades['Realized_USD']
-            axes[1, 0].hist(pnl_usd, bins=50, color='purple', alpha=0.7)
-            axes[1, 0].set_title('Trade PnL Distribution ($)')
-            axes[1, 0].set_xlabel('Profit/Loss ($)')
-            axes[1, 0].set_ylabel('Frequency')
-            axes[1, 0].axvline(0, color='black', linestyle='--')
-        
-        # 4. Rolling Win Rate (Stability)
-        if not trades.empty:
-            # We need to map trades back to time for a rolling line
-            trades_with_exit = trades.set_index('Exit_Time')
-            trades_with_exit['Win'] = np.where(trades_with_exit['PnL'] > 0, 1, 0)
-            rolling_wr = trades_with_exit['Win'].rolling(window=50).mean() * 100
-            
-            axes[1, 1].plot(rolling_wr.index, rolling_wr.values, color='green')
-            axes[1, 1].set_title('Rolling Win Rate (50-Trade Avg)')
-            axes[1, 1].set_ylabel('Win Rate %')
-            axes[1, 1].axhline(50, color='black', linestyle='--')
-        
-        plt.tight_layout()
-        plt.show()
-
-# ==========================================
-# 5. Main
-# ==========================================
-def main():
-    print("Initializing Framework V21 (Fixed Sizing + Macro Filter)...")
-    
-    loader = DataLoader('Data/btc_1m_orderflow.csv') 
-    df = loader.load_data()
-    
-    if df.empty: return
-
-    ff = FeatureFactory(df)
-    processed_df = ff.engineer_features()
-
-    engine = StrategyEngine(processed_df)
-    engine.run_hybrid_strategies()
-
-    # Print Text Results
-    results_df = pd.DataFrame(engine.results)
-    if not results_df.empty:
-        results_df.sort_values(by=['Sharpe'], ascending=False, inplace=True)
-        print("\n" + "="*80)
-        print("INSTITUTIONAL TEAR SHEET")
-        print("="*80)
-        print(results_df.to_string(index=False))
-        
-        # LAUNCH GRAPHS
-        print("\nGenering Graphs...")
-        viz = Visualizer(engine.equity_curves, engine.trade_logs)
-        viz.plot_performance()
-    else:
-        print("\nNo trades generated.")
-
-if __name__ == "__main__":
-    main()
